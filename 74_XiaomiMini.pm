@@ -9,6 +9,7 @@
 # changes:
 # 2020-01-21 initial alpha, privat testing
 # 2020-01-25 kill the gatttool process in the background
+# 2020-01-25 fixing temperatur - reorganized code
 
 #
 
@@ -137,7 +138,7 @@ sub Get($$@) {
     if ($cmd eq 'sensorData' or $cmd eq 'model' or $cmd eq 'firmware' or $cmd eq 'manufactury') {
         Log3 $name, 4,"Get Mac -> $mac, Name -> $name, Cmd -> $cmd";
         myUtils_LYWSD03MMC_main($mac,$name,$cmd);
-        #stateRequest1($hash);
+        #stateRequest($hash);
     }
     elsif($cmd eq 'battery' and (CallBattery_IsUpdateTimeAgeToOld($hash,$CallBatteryAge{ AttrVal( $name, 'BatteryFirmwareAge','24h' ) } ) ) )
     {   myUtils_LYWSD03MMC_main($mac,$name,$cmd);
@@ -199,7 +200,7 @@ sub Attr(@) {
         if ( $cmd eq "set" ) {
             return "check disabledForIntervals Syntax HH:MM-HH:MM or 'HH:MM-HH:MM HH:MM-HH:MM ...'" unless ( $attrVal =~ /^((\d{2}:\d{2})-(\d{2}:\d{2})\s?)+$/ );
             Log3 $name, 3, "XiaomiMini ($name) - disabledForIntervals";
-            stateRequest1($hash);
+            stateRequest($hash);
         }
 
         elsif ( $cmd eq "del" ) {
@@ -310,6 +311,9 @@ sub myUtils_LYWSD03MMC_main($$$)
     $arg = "connect $mac, char-write-req 0x0038 0100, disconnect $mac, exit" if($cmd eq 'sensorData');
     $arg = 'a, exit' if($cmd eq 'firmware' or $cmd eq 'manufactury' or $cmd eq 'model' or $cmd eq 'battery');
   
+  
+    Log3 $name, 5, "Sub myUtils_LYWSD03MMC_main, Before the call - hash -> $hash, hash-helper -> " .$hash->{helper}{RUNNING_PID};
+    
     # NonBlocking Call to run Subroutine
     $hash->{helper}{RUNNING_PID} = BlockingCall(
         "FHEM::XiaomiMini::BluetoothCommands",
@@ -319,7 +323,7 @@ sub myUtils_LYWSD03MMC_main($$$)
         "FHEM::XiaomiMini::BluetoothCommands_Aborted",
         $hash
     ) unless ( exists( $hash->{helper}{RUNNING_PID} ));
-    Log3 $name, 5, "Sub myUtils_LYWSD03MMC_main ($name) - hash -> $hash, cmd -> $cmd";
+    Log3 $name, 5, "Sub myUtils_LYWSD03MMC_main, After the call - hash -> $hash, hash-helper -> " .$hash->{helper}{RUNNING_PID};
 }
 
 
@@ -462,12 +466,9 @@ sub BluetoothCommands($)
 						my $pos1 = index(substr($x_buffer,$pos),'@');
 						if ($pos != -1 and $pos1 != -1) 
 						{	my $value = substr($x_buffer,$pos+7,14);
-							$value =~ s/ //g;
 							Log3 $name, 4, "XiaomiMini Value -> $value";
-							$hex = substr($value,0,2);
-							$temperatur = hex($hex)/10;
-							$hex = substr($value,4,2);
-							$humidity = hex($hex);
+							$temperatur = hex((split(' ',$value))[1] .(split(' ',$value))[0])/100;
+							$humidity = hex((split(' ',$value))[2]);
 							$done = 1;
 							$launch_flag = 1;
 							last;
@@ -497,8 +498,9 @@ sub BluetoothCommands($)
 						return "$name|$mac|$arg|$temperatur|$humidity|$model|$firmware|$manufactury|$battery|error|$errorText";
 					}
                 }
-				if ($x_buffer =~ /@/ and $cmd eq 'battery') {
-                   my $pos = index($x_buffer,'descriptor:');
+				if ($x_buffer =~ /@/ and $cmd eq 'battery') 
+				{
+					my $pos = index($x_buffer,'descriptor:');
 					if ($pos != -1) 
 					{	$hex = substr($x_buffer,$pos+12,2);
 						$hex =~ s/\s+//g;
@@ -506,32 +508,31 @@ sub BluetoothCommands($)
 						my $gatttool = qx($kill);
 						return "$name|$mac|$arg|$temperatur|$humidity|$model|$firmware|$manufactury|$battery|ok|$errorText";
 					}
-                   elsif($pos == -1)
-                   {   	my $gatttool = qx($kill);
+					elsif($pos == -1)
+					{	my $gatttool = qx($kill);
 						return "$name|$mac|$arg|$temperatur|$humidity|$model|$firmware|$manufactury|$battery|error|$errorText";
-                   }
+					}
                 }
-				if ($x_buffer =~ /@/ and $cmd eq 'firmware') {
-                   my $pos = index($x_buffer,'descriptor:');
-                   if ($pos != -1) {
-                      $hex = substr($x_buffer,$pos+12);
-                      $hex =~ s/\s+//g;
-                      $firmware = pack('H*',$hex);
-					  my $gatttool = qx($kill);
-                      return "$name|$mac|$arg|$temperatur|$humidity|$model|$firmware|$manufactury|$battery|ok|$errorText";
-                   }
+				if ($x_buffer =~ /@/ and $cmd eq 'firmware') 
+				{	my $pos = index($x_buffer,'descriptor:');
+					if ($pos != -1) 
+					{	$hex = substr($x_buffer,$pos+12);
+						$hex =~ s/\s+//g;
+						$firmware = pack('H*',$hex);
+						return "$name|$mac|$arg|$temperatur|$humidity|$model|$firmware|$manufactury|$battery|ok|$errorText";
+					}
                 }
-                if ($x_buffer =~ /@/ and $cmd eq 'manufactury') {
-                   my $pos = index($x_buffer,'descriptor:');
-                   if ($pos != -1) {
-                      $hex = substr($x_buffer,$pos+12);
-                      $hex =~ s/\s+//g;
-                      $manufactury = pack('H*',$hex);
-					  my $gatttool = qx($kill);
-                      return "$name|$mac|$arg|$temperatur|$humidity|$model|$firmware|$manufactury|$battery|ok|$errorText";
-                   }
-                }
-            } until ( $x_buffer =~ /^%*[^\[].*#\s+/ );
+				if ($x_buffer =~ /@/ and $cmd eq 'manufactury') 
+				{	my $pos = index($x_buffer,'descriptor:');
+					if ($pos != -1) 
+					{	$hex = substr($x_buffer,$pos+12);
+						$hex =~ s/\s+//g;
+						$manufactury = pack('H*',$hex);
+						my $gatttool = qx($kill);
+						return "$name|$mac|$arg|$temperatur|$humidity|$model|$firmware|$manufactury|$battery|ok|$errorText";
+					}
+				}
+			} until ( $x_buffer =~ /^%*[^\[].*#\s+/ );
 
             if ( $launch_flag )
             {   last;
@@ -559,11 +560,11 @@ sub BluetoothCommands($)
         #print "\n     $next_command  ->\n";
         print $out_fid "$next_command\n";
         $prec_command = $next_command;
-    }
-    close ( $in_fid );
-    close ( $out_fid );
+	}
+	close ( $in_fid );
+	close ( $out_fid );
 	my $gatttool = qx($kill);
-    return "$name|$mac|$arg|$temperatur|$humidity|$model|$firmware|$manufactury|$battery|ok|$errorText";
+	return "$name|$mac|$arg|$temperatur|$humidity|$model|$firmware|$manufactury|$battery|ok|$errorText";
 }
 
 sub BluetoothCommands_Done($) {
@@ -601,9 +602,7 @@ sub BluetoothCommands_Done($) {
     }
     delete( $hash->{helper}{RUNNING_PID} );
 
-    Log3 $name, 5,"BluetoothCommands ($name) - BluetoothCommands: Helper is disabled. Stop processing";
-	
-	
+    Log3 $name, 5,"BluetoothCommands ($name) - BluetoothCommands: Helper is disabled. Stop processing"
 }
 
 sub BluetoothCommands_Aborted($) {
@@ -628,14 +627,14 @@ sub stateRequestTimer($) {
     my $name = $hash->{NAME};
 
     RemoveInternalTimer($hash);
-    stateRequest1($hash);
+    stateRequest($hash);
 
     InternalTimer( gettimeofday() + $hash->{INTERVAL} + int( rand(60) ), "XiaomiMini_stateRequestTimer", $hash );
 
     Log3 $name, 4, "XiaomiMini ($name) - stateRequestTimer: Call Request Timer";
 }
 
-sub stateRequest1($) 
+sub stateRequest($) 
 {   my ($hash) = @_;
     my $name = $hash->{NAME};
     my $mac = $hash->{BTMAC};
