@@ -8,6 +8,7 @@
 #
 # changes:
 # 2020-01-21 initial alpha, privat testing
+# 2020-01-25 kill the gatttool process in the background
 
 #
 
@@ -67,7 +68,7 @@ BEGIN {
 GP_Export(
     qw(
       Initialize
-      stateRequestTimer2
+      stateRequestTimer
       )
 );
 
@@ -136,7 +137,7 @@ sub Get($$@) {
     if ($cmd eq 'sensorData' or $cmd eq 'model' or $cmd eq 'firmware' or $cmd eq 'manufactury') {
         Log3 $name, 4,"Get Mac -> $mac, Name -> $name, Cmd -> $cmd";
         myUtils_LYWSD03MMC_main($mac,$name,$cmd);
-        #stateRequest2($hash);
+        #stateRequest1($hash);
     }
     elsif($cmd eq 'battery' and (CallBattery_IsUpdateTimeAgeToOld($hash,$CallBatteryAge{ AttrVal( $name, 'BatteryFirmwareAge','24h' ) } ) ) )
     {   myUtils_LYWSD03MMC_main($mac,$name,$cmd);
@@ -198,7 +199,7 @@ sub Attr(@) {
         if ( $cmd eq "set" ) {
             return "check disabledForIntervals Syntax HH:MM-HH:MM or 'HH:MM-HH:MM HH:MM-HH:MM ...'" unless ( $attrVal =~ /^((\d{2}:\d{2})-(\d{2}:\d{2})\s?)+$/ );
             Log3 $name, 3, "XiaomiMini ($name) - disabledForIntervals";
-            stateRequest2($hash);
+            stateRequest1($hash);
         }
 
         elsif ( $cmd eq "del" ) {
@@ -231,14 +232,14 @@ sub Notify($$) {
 
     my ( $hash, $dev ) = @_;
     my $name = $hash->{NAME};
-    return stateRequestTimer2($hash) if ( IsDisabled($name) );
+    return stateRequestTimer($hash) if ( IsDisabled($name) );
 
     my $devname = $dev->{NAME};
     my $devtype = $dev->{TYPE};
     my $events  = deviceEvents( $dev, 1 );
     return if ( !$events );
 
-    stateRequestTimer2($hash)
+    stateRequestTimer($hash)
       if (
         (
             (
@@ -307,11 +308,8 @@ sub myUtils_LYWSD03MMC_main($$$)
   
     # Set Parameter to execute statement
     $arg = "connect $mac, char-write-req 0x0038 0100, disconnect $mac, exit" if($cmd eq 'sensorData');
-    $arg = 'a,exit' if($cmd eq 'firmware' or $cmd eq 'manufactury' or $cmd eq 'model' or $cmd eq 'battery');
+    $arg = 'a, exit' if($cmd eq 'firmware' or $cmd eq 'manufactury' or $cmd eq 'model' or $cmd eq 'battery');
   
-  
-    Log3 $name, 5, "Sub myUtils_LYWSD03MMC_main, Before the call - hash -> $hash, hash-helper -> " .$hash->{helper}{RUNNING_PID};
-    
     # NonBlocking Call to run Subroutine
     $hash->{helper}{RUNNING_PID} = BlockingCall(
         "FHEM::XiaomiMini::BluetoothCommands",
@@ -321,7 +319,7 @@ sub myUtils_LYWSD03MMC_main($$$)
         "FHEM::XiaomiMini::BluetoothCommands_Aborted",
         $hash
     ) unless ( exists( $hash->{helper}{RUNNING_PID} ));
-    Log3 $name, 5, "Sub myUtils_LYWSD03MMC_main, After the call - hash -> $hash, hash-helper -> " .$hash->{helper}{RUNNING_PID};
+    Log3 $name, 5, "Sub myUtils_LYWSD03MMC_main ($name) - hash -> $hash, cmd -> $cmd";
 }
 
 
@@ -391,6 +389,7 @@ sub BluetoothCommands($)
 	my $firstCatch = 0;
     my @ARGV = split(',',$arg);
     my $hash = $defs{$name};
+	my $kill = 'killall -9 gatttool';
 
     Log3 $name, 4, "XiaomiMini ARGV -> @ARGV, mac -> $mac, name -> $name, cmd -> $cmd";
 
@@ -424,6 +423,7 @@ sub BluetoothCommands($)
 				}
 				elsif ($next_command =~ /exit/ and $error == 1)
 				{	Log3 $name, 4, "XiaomiMini ErrorBlock2 -> $error, Command -> $next_command, ErrorText -> $errorText";
+					my $gatttool = qx($kill);
 					return "$name|$mac|$arg|$temperatur|$humidity|$model|$firmware|$manufactury|$battery|error|$errorText";
 				}
 				
@@ -462,9 +462,12 @@ sub BluetoothCommands($)
 						my $pos1 = index(substr($x_buffer,$pos),'@');
 						if ($pos != -1 and $pos1 != -1) 
 						{	my $value = substr($x_buffer,$pos+7,14);
+							$value =~ s/ //g;
 							Log3 $name, 4, "XiaomiMini Value -> $value";
-							$temperatur = hex((split(' ',$value))[1] .(split(' ',$value))[0])/100;
-							$humidity = hex((split(' ',$value))[2]);
+							$hex = substr($value,0,2);
+							$temperatur = hex($hex)/10;
+							$hex = substr($value,4,2);
+							$humidity = hex($hex);
 							$done = 1;
 							$launch_flag = 1;
 							last;
@@ -474,6 +477,7 @@ sub BluetoothCommands($)
 					$pos = index($x_buffer,'WARNING');
 					if ($pos != -1 and $done == 1) 
 					{	Log3 $name, 4, "XiaomiMini Disconnect to $mac";
+						my $gatttool = qx($kill);
 						return "$name|$mac|$arg|$temperatur|$humidity|$model|$firmware|$manufactury|$battery|ok|$errorText";
 					}
 				}
@@ -484,23 +488,27 @@ sub BluetoothCommands($)
 						$hex = substr($x_buffer,$pos+12);
 						$hex =~ s/\s+//g;
 						$model = pack('H*',$hex);
+						my $gatttool = qx($kill);
 						return "$name|$mac|$arg|$temperatur|$humidity|$model|$firmware|$manufactury|$battery|ok|$errorText";
 					}
 					$pos = index($x_buffer,'error:');
 					if ($pos != -1) 
-					{	return "$name|$mac|$arg|$temperatur|$humidity|$model|$firmware|$manufactury|$battery|error|$errorText";
+					{	my $gatttool = qx($kill);
+						return "$name|$mac|$arg|$temperatur|$humidity|$model|$firmware|$manufactury|$battery|error|$errorText";
 					}
                 }
 				if ($x_buffer =~ /@/ and $cmd eq 'battery') {
                    my $pos = index($x_buffer,'descriptor:');
-                   if ($pos != -1) {
-                      $hex = substr($x_buffer,$pos+12,2);
-                      $hex =~ s/\s+//g;
-                      $battery = hex($hex);
-                      return "$name|$mac|$arg|$temperatur|$humidity|$model|$firmware|$manufactury|$battery|ok|$errorText";
-                   }
+					if ($pos != -1) 
+					{	$hex = substr($x_buffer,$pos+12,2);
+						$hex =~ s/\s+//g;
+						$battery = hex($hex);
+						my $gatttool = qx($kill);
+						return "$name|$mac|$arg|$temperatur|$humidity|$model|$firmware|$manufactury|$battery|ok|$errorText";
+					}
                    elsif($pos == -1)
-                   {   return "$name|$mac|$arg|$temperatur|$humidity|$model|$firmware|$manufactury|$battery|error|$errorText";
+                   {   	my $gatttool = qx($kill);
+						return "$name|$mac|$arg|$temperatur|$humidity|$model|$firmware|$manufactury|$battery|error|$errorText";
                    }
                 }
 				if ($x_buffer =~ /@/ and $cmd eq 'firmware') {
@@ -509,6 +517,7 @@ sub BluetoothCommands($)
                       $hex = substr($x_buffer,$pos+12);
                       $hex =~ s/\s+//g;
                       $firmware = pack('H*',$hex);
+					  my $gatttool = qx($kill);
                       return "$name|$mac|$arg|$temperatur|$humidity|$model|$firmware|$manufactury|$battery|ok|$errorText";
                    }
                 }
@@ -518,6 +527,7 @@ sub BluetoothCommands($)
                       $hex = substr($x_buffer,$pos+12);
                       $hex =~ s/\s+//g;
                       $manufactury = pack('H*',$hex);
+					  my $gatttool = qx($kill);
                       return "$name|$mac|$arg|$temperatur|$humidity|$model|$firmware|$manufactury|$battery|ok|$errorText";
                    }
                 }
@@ -552,6 +562,7 @@ sub BluetoothCommands($)
     }
     close ( $in_fid );
     close ( $out_fid );
+	my $gatttool = qx($kill);
     return "$name|$mac|$arg|$temperatur|$humidity|$model|$firmware|$manufactury|$battery|ok|$errorText";
 }
 
@@ -590,7 +601,9 @@ sub BluetoothCommands_Done($) {
     }
     delete( $hash->{helper}{RUNNING_PID} );
 
-    Log3 $name, 5,"BluetoothCommands ($name) - BluetoothCommands: Helper is disabled. Stop processing"
+    Log3 $name, 5,"BluetoothCommands ($name) - BluetoothCommands: Helper is disabled. Stop processing";
+	
+	
 }
 
 sub BluetoothCommands_Aborted($) {
@@ -608,21 +621,21 @@ sub BluetoothCommands_Aborted($) {
     Log3 $name, 4, "XiaomiMini ($name) - BluetoothCommands_Aborted: The BlockingCall Process terminated unexpectedly. Timedout";
 }
 
-sub stateRequestTimer2($) {
+sub stateRequestTimer($) {
 
     my ($hash) = @_;
 
     my $name = $hash->{NAME};
 
     RemoveInternalTimer($hash);
-    stateRequest2($hash);
+    stateRequest1($hash);
 
-    InternalTimer( gettimeofday() + $hash->{INTERVAL} + int( rand(60) ), "XiaomiMini_stateRequestTimer2", $hash );
+    InternalTimer( gettimeofday() + $hash->{INTERVAL} + int( rand(60) ), "XiaomiMini_stateRequestTimer", $hash );
 
-    Log3 $name, 4, "XiaomiMini ($name) - stateRequestTimer2: Call Request Timer";
+    Log3 $name, 4, "XiaomiMini ($name) - stateRequestTimer: Call Request Timer";
 }
 
-sub stateRequest2($) 
+sub stateRequest1($) 
 {   my ($hash) = @_;
     my $name = $hash->{NAME};
     my $mac = $hash->{BTMAC};
